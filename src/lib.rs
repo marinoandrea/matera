@@ -179,6 +179,16 @@ impl<
         }
     }
 
+    /// Add transition to the Petri net.
+    ///
+    /// # Arguments
+    /// * `t_id` - new transition identifier
+    /// * `external` - whether the transition is external
+    ///
+    /// # Errors
+    ///
+    /// * `PetriNetError::DuplicateTransition` - if the transition id already exists
+    ///
     pub fn add_transition(
         &mut self,
         t_id: TTransitionId,
@@ -206,6 +216,15 @@ impl<
         Ok(())
     }
 
+    /// Remove transition from the Petri net.
+    ///
+    /// # Arguments
+    /// * `t_id` - transition identifier to remove
+    ///
+    /// # Errors
+    ///
+    /// * `PetriNetError::UnkownTransition` - if the transition id does not exists
+    ///
     pub fn remove_transition(
         &mut self,
         t_id: TTransitionId,
