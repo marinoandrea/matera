@@ -11,27 +11,6 @@
 //! the net operates in two different modes: it either executes internal transitions until
 //! it reaches stability, or it executes external ones one at a time.
 //!
-//! The net is implemented using an incidence matrix and marking array approach.
-//! While each node (place or transition) is labeled with a string name, they
-//! are internally mapped to integer indices. In the marking array T, for each
-//! place i we have:
-//!
-//! T[i] = tokens_i
-//!
-//! This also allows us to build an incidence matrix W with size NxM (where N = # of transitions
-//! and M = # of places). Therefore, given a transition x and place y:
-//!
-//! W[x][y] = weight_arc_xy
-//!
-//! We represent input arcs with negative weights so they consume tokens, and
-//! output arcs with positive weights so they produce tokens. With this premise,
-//! firing a complete transition x is equivalent to the following operation:
-//!
-//! T = T + W[x]
-//!
-//! External transitions are fired in two steps, first tokens are consumed and events are
-//! pushed to the environment. Then, once the completion event is received, tokens are
-//! produced in the ouput arcs.
 use std::{
     collections::{HashMap, HashSet},
     fmt,
@@ -43,6 +22,26 @@ use std::{
 use num_traits::{PrimInt, Signed};
 
 /// A reactive Petri net implementation based on [Eshuis et al. from 2003](https://doi.org/10.1007/3-540-44919-1_20).
+///
+/// The net is implemented using an incidence matrix and marking array approach.
+///
+/// While each node (place or transition) is labeled with a string name, they
+/// are internally mapped to integer indices. In the marking array T, for each
+/// place i we have:
+///
+/// `T[i] = tokens_i`
+///
+/// This also allows us to build an incidence matrix W with size NxM (where N = # of transitions
+/// and M = # of places). Therefore, given a transition x and place y:
+///
+/// `W[x][y] = weight_arc_xy`
+///
+/// We represent input arcs with negative weights so they consume tokens, and
+/// output arcs with positive weights so they produce tokens. With this premise,
+/// firing a complete transition x is equivalent to the following operation:
+///
+/// `T = T + W[x]`
+///
 #[derive(Debug)]
 pub struct PetriNet<
     TPlaceId: Hash + Eq + Clone + fmt::Debug,
@@ -166,7 +165,7 @@ impl<
     ///
     /// # Errors
     ///
-    /// * `PetriNetError::UnkownPlace` - if the place id does not exists
+    /// * `PetriNetError::UnknownPlace` - if the place id does not exists
     ///
     /// # Time Complexity
     ///
@@ -300,7 +299,7 @@ impl<
     ///
     /// # Errors
     ///
-    /// * `PetriNetError::UnkownTransition` - if the transition id does not exists
+    /// * `PetriNetError::UnknownTransition` - if the transition id does not exists
     ///
     /// # Time Complexity
     ///
@@ -356,6 +355,24 @@ impl<
         Ok(())
     }
 
+    /// Add input arc with weight from the Petri net.
+    ///
+    /// The weight is taken in absolute value and will be stored as `-weight.abs()`.
+    ///
+    /// # Arguments
+    /// * `source` - source node identifier (place)
+    /// * `target` - source node identifier (transition)
+    /// * `weight` - weight of the arc
+    ///
+    /// # Errors
+    ///
+    /// * `PetriNetError::UnknownPlace` - if the place id does not exists
+    /// * `PetriNetError::UnknownTransition` - if the transition id does not exists
+    ///
+    /// # Time Complexity
+    ///
+    /// This operation is always O(1).
+    ///
     pub fn add_input_arc(
         &mut self,
         source: TPlaceId,
@@ -375,6 +392,21 @@ impl<
         }
     }
 
+    /// Remove input arc with weight from the Petri net.
+    ///
+    /// # Arguments
+    /// * `source` - source node identifier (transition)
+    /// * `target` - source node identifier (place)
+    ///
+    /// # Errors
+    ///
+    /// * `PetriNetError::UnknownPlace` - if the place id does not exists
+    /// * `PetriNetError::UnknownTransition` - if the transition id does not exists
+    ///
+    /// # Time Complexity
+    ///
+    /// This operation is always O(1).
+    ///
     pub fn remove_input_arc(
         &mut self,
         source: TPlaceId,
@@ -393,6 +425,24 @@ impl<
         }
     }
 
+    /// Add output arc with weight from the Petri net.
+    ///
+    /// The weight is taken in absolute value and will be stored as `+weight.abs()`.
+    ///
+    /// # Arguments
+    /// * `source` - source node identifier (place)
+    /// * `target` - source node identifier (transition)
+    /// * `weight` - weight of the arc
+    ///
+    /// # Errors
+    ///
+    /// * `PetriNetError::UnknownPlace` - if the place id does not exists
+    /// * `PetriNetError::UnknownTransition` - if the transition id does not exists
+    ///
+    /// # Time Complexity
+    ///
+    /// This operation is always O(1).
+    ///
     pub fn add_output_arc(
         &mut self,
         source: TTransitionId,
@@ -412,6 +462,21 @@ impl<
         }
     }
 
+    /// Remove output arc with weight from the Petri net.
+    ///
+    /// # Arguments
+    /// * `source` - source node identifier (transition)
+    /// * `target` - source node identifier (place)
+    ///
+    /// # Errors
+    ///
+    /// * `PetriNetError::UnknownPlace` - if the place id does not exists
+    /// * `PetriNetError::UnknownTransition` - if the transition id does not exists
+    ///
+    /// # Time Complexity
+    ///
+    /// This operation is always O(1).
+    ///
     pub fn remove_output_arc(
         &mut self,
         source: TTransitionId,
@@ -430,6 +495,18 @@ impl<
         }
     }
 
+    /// Check whether the transition is enabled.
+    ///
+    /// A transition is enabled if, for each input arc, the amount of tokens
+    /// in the source place are greater or equal than the arc's weight.
+    ///
+    /// # Arguments
+    /// * `t_id` - transition identifier
+    ///
+    /// # Errors
+    ///
+    /// * `PetriNetError::UnknownTransition` - if the transition id does not exists
+    ///
     pub fn is_transition_enabled(
         &self,
         t_id: TTransitionId,
@@ -451,6 +528,8 @@ impl<
             })
     }
 
+    /// Check whether the net is unstable.
+    /// That is, there is at least one enabled internal transition.
     #[inline]
     pub fn is_unstable(&self) -> bool {
         self.transition_indices
@@ -459,11 +538,33 @@ impl<
             .any(|t_index| self._is_transition_enabled(*t_index))
     }
 
+    /// Reset the net to the original marking values.
     #[inline]
     pub fn reset(&mut self) {
         self.marking.copy_from_slice(&self.initial_marking);
     }
 
+    /// Perform one step of the simulation.
+    ///
+    /// # Arguments
+    /// * `source` - source node identifier (transition)
+    /// * `target` - source node identifier (place)
+    ///
+    /// # Errors
+    ///
+    /// * `PetriNetError::UnknownTransition` - if the received completion event is for a transition that does not exists
+    /// * `PetriNetError::InvalidCompletionEvent` - if the received completion event is for a transition that is not enabled
+    /// * `PetriNetError::SendError` - if announcing the transitions errors out
+    /// * `PetriNetError::RecvError` - if receiving the completion events errors out
+    ///
+    /// # Time Complexity
+    ///
+    /// Given:
+    /// - N = # number of transitions
+    /// - M = # number of places
+    ///
+    /// This operation is always O(N+M).
+    ///
     pub fn step(&mut self) -> Result<(), PetriNetError<TPlaceId, TTransitionId, TRange>> {
         // due to the perfect synchrony hypothesis, we assume that internal reactions
         // are always faster than the external system. Therefore, we fire internal
