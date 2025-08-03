@@ -109,6 +109,12 @@ impl<
         TRange: PrimInt + Signed + AddAssign + fmt::Debug,
     > PetriNet<TPlaceId, TTransitionId, TRange>
 {
+    /// Create a new empty Petri net.
+    ///
+    /// # Arguments
+    /// * `input_queue` - external transition completion inbound channel
+    /// * `output_queue` - external transition announcement outbound channel
+    ///
     pub fn new(input_queue: Receiver<TTransitionId>, output_queue: Sender<TTransitionId>) -> Self {
         PetriNet {
             marking: Vec::new(),
