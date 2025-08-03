@@ -398,6 +398,7 @@ impl<
     /// Add input arc with weight from the Petri net.
     ///
     /// The weight is taken in absolute value and will be stored as `-weight.abs()`.
+    /// Direct loops, as in the same place as input and output, will error.
     ///
     /// # Arguments
     /// * `source` - source node identifier (place)
@@ -408,6 +409,7 @@ impl<
     ///
     /// * `PetriNetError::UnknownPlace` - if the place id does not exists
     /// * `PetriNetError::UnknownTransition` - if the transition id does not exists
+    /// * `PetriNetError::DuplicateArc` - if source and target are already connected
     ///
     /// # Time Complexity
     ///
@@ -423,8 +425,12 @@ impl<
             Some(p_index) => match self.transition_indices.get(&target) {
                 Some(t_index) => {
                     let cell = t_index * self.place_index_head + p_index;
-                    self.incidence_matrix[cell] = -weight.abs();
-                    Ok(())
+                    if self.incidence_matrix[cell] != TRange::zero() {
+                        Err(PetriNetError::DuplicateArc(source, target))
+                    } else {
+                        self.incidence_matrix[cell] = -weight.abs();
+                        Ok(())
+                    }
                 }
                 None => Err(PetriNetError::UnknownTransition(target)),
             },
@@ -468,6 +474,7 @@ impl<
     /// Add output arc with weight from the Petri net.
     ///
     /// The weight is taken in absolute value and will be stored as `+weight.abs()`.
+    /// Direct loops, as in the same place as input and output, will error.
     ///
     /// # Arguments
     /// * `source` - source node identifier (place)
@@ -478,6 +485,7 @@ impl<
     ///
     /// * `PetriNetError::UnknownPlace` - if the place id does not exists
     /// * `PetriNetError::UnknownTransition` - if the transition id does not exists
+    /// * `PetriNetError::DuplicateArc` - if source and target are already connected
     ///
     /// # Time Complexity
     ///
@@ -493,8 +501,12 @@ impl<
             Some(p_index) => match self.transition_indices.get(&source) {
                 Some(t_index) => {
                     let cell = t_index * self.place_index_head + p_index;
-                    self.incidence_matrix[cell] = weight.abs();
-                    Ok(())
+                    if self.incidence_matrix[cell] != TRange::zero() {
+                        Err(PetriNetError::DuplicateArc(target, source))
+                    } else {
+                        self.incidence_matrix[cell] = weight.abs();
+                        Ok(())
+                    }
                 }
                 None => Err(PetriNetError::UnknownTransition(source)),
             },
@@ -658,6 +670,7 @@ pub enum PetriNetError<
 > {
     DuplicatePlace(TPlaceId),
     DuplicateTransition(TTransitionId),
+    DuplicateArc(TPlaceId, TTransitionId),
     UnknownPlace(TPlaceId),
     UnknownTransition(TTransitionId),
     SendError(SendError<TTransitionId>),
@@ -676,6 +689,9 @@ impl<
         match self {
             PetriNetError::DuplicatePlace(p_id) => write!(f, "DuplicatePlace {:?}", p_id),
             PetriNetError::DuplicateTransition(t_id) => write!(f, "DuplicateTransition {:?}", t_id),
+            PetriNetError::DuplicateArc(p_id, t_id) => {
+                write!(f, "DuplicateArc {:?}-{:?}", p_id, t_id)
+            }
             PetriNetError::UnknownPlace(p_id) => write!(f, "UnknownPlace {:?}", p_id),
             PetriNetError::UnknownTransition(t_id) => write!(f, "UnknownTransition {:?}", t_id),
             PetriNetError::SendError(err) => write!(f, "SendError {:?}", err),
@@ -728,7 +744,7 @@ impl<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{error::Error, sync::mpsc};
+    use std::{error::Error, sync::mpsc, time::Duration};
 
     type TestPetriNet<'i> = PetriNet<&'i str, &'i str, i8>;
 
@@ -1057,6 +1073,82 @@ mod tests {
         net.step()?;
 
         assert!(!net.is_unstable());
+
+        Ok(())
+    }
+
+    #[test]
+    fn decision_loop() -> Result<(), Box<dyn Error>> {
+        let (input_tx, input_rx) = mpsc::channel();
+        let (output_tx, output_rx) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
+
+        net.add_place("P1", 1)?;
+        net.add_place("P2", 0)?;
+
+        net.add_transition("T1", true)?;
+        net.add_transition("T2", true)?;
+        net.add_transition("T3", true)?;
+        net.add_transition("Back", false)?;
+
+        net.add_input_arc("P1", "T1", 1)?;
+        net.add_input_arc("P1", "T2", 1)?;
+        net.add_input_arc("P1", "T3", 1)?;
+
+        net.add_output_arc("T1", "P2", 1)?;
+        net.add_output_arc("T2", "P2", 1)?;
+        net.add_output_arc("T3", "P2", 1)?;
+
+        net.add_input_arc("P2", "Back", 1)?;
+        net.add_output_arc("Back", "P1", 1)?;
+
+        assert!(net.is_transition_enabled("T1")?);
+        assert!(net.is_transition_enabled("T2")?);
+        assert!(net.is_transition_enabled("T3")?);
+
+        fn check_for_events(queue: &Receiver<&'static str>) -> Result<(), Box<dyn Error>> {
+            let mut missing_events = HashSet::from(["T1", "T2", "T3"]);
+
+            let e1 = queue.recv_timeout(Duration::from_millis(100))?;
+            let e2 = queue.recv_timeout(Duration::from_millis(100))?;
+            let e3 = queue.recv_timeout(Duration::from_millis(100))?;
+
+            missing_events.remove(e1);
+            missing_events.remove(e2);
+            missing_events.remove(e3);
+
+            assert!(missing_events.is_empty());
+
+            Ok(())
+        }
+
+        for t_id in ["T1", "T2", "T3"] {
+            // we step in a separate thread to avoid hanging
+            let handle = std::thread::spawn(move || {
+                let mut net = net;
+                net.step().unwrap();
+                net
+            });
+
+            check_for_events(&output_rx)?;
+
+            // we manually push the completion event
+            input_tx.send(t_id)?;
+
+            // and wait for the step to take place
+            net = handle.join().unwrap();
+
+            assert!(net.get_tokens("P2")? == 1);
+            assert!(net.is_transition_enabled("Back")?);
+
+            net.step()?;
+
+            // all transitions should be enabled again as the net is a loop
+            assert!(net.get_tokens("P1")? == 1);
+            assert!(net.is_transition_enabled("T1")?);
+            assert!(net.is_transition_enabled("T2")?);
+            assert!(net.is_transition_enabled("T3")?);
+        }
 
         Ok(())
     }
