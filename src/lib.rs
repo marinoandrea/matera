@@ -1,3 +1,37 @@
+//! Reactive Petri nets implementation.
+//!
+//! Reactive Petri nets differ from normal ones because they can interact with an
+//! external system. Therefore, the token-game semantics are modified to account
+//! for asynchronous interactions with an environment that the net is monitoring.
+//!
+//! To achieve this, the net distinguishes between _internal_ and _external_ transitions.
+//! We call a net _stable_ if all its internal transitions are disabled, _unstable_
+//! otherwise. Moreover, we assume the _Perfect Synchrony Hypothesis_, which states that
+//! internal transitions are always faster that external ones. Based on these definitions,
+//! the net operates in two different modes: it either executes internal transitions until
+//! it reaches stability, or it executes external ones one at a time.
+//!
+//! The net is implemented using an incidence matrix and marking array approach.
+//! While each node (place or transition) is labeled with a string name, they
+//! are internally mapped to integer indices. In the marking array T, for each
+//! place i we have:
+//!
+//! T[i] = tokens_i
+//!
+//! This also allows us to build an incidence matrix W with size NxM (where N = # of transitions
+//! and M = # of places). Therefore, given a transition x and place y:
+//!
+//! W[x][y] = weight_arc_xy
+//!
+//! We represent input arcs with negative weights so they consume tokens, and
+//! output arcs with positive weights so they produce tokens. With this premise,
+//! firing a complete transition x is equivalent to the following operation:
+//!
+//! T = T + W[x]
+//!
+//! External transitions are fired in two steps, first tokens are consumed and events are
+//! pushed to the environment. Then, once the completion event is received, tokens are
+//! produced in the ouput arcs.
 use std::{
     collections::{HashMap, HashSet},
     fmt,
@@ -6,6 +40,7 @@ use std::{
 
 use num_traits::{PrimInt, Signed};
 
+/// A reactive Petri net implementation based on [Eshuis et al. from 2003](https://doi.org/10.1007/3-540-44919-1_20).
 pub struct PetriNet<
     TPlaceId: Hash + Eq + Clone + fmt::Debug,
     TTransitionId: Hash + Eq + Clone + fmt::Debug,
@@ -115,15 +150,14 @@ impl<
         &mut self,
         p_id: TPlaceId,
     ) -> Result<(), PetriNetError<TPlaceId, TTransitionId, TRange>> {
-        if !self.place_indices.contains_key(&p_id) {
+        let premoved_index;
+        if let Some(index) = self.place_indices.get(&p_id) {
+            premoved_index = *index;
+        } else {
             return Err(PetriNetError::UnknownPlace(p_id));
         }
 
         let plast_index = self.place_index_head - 1;
-        let premoved_index = *self
-            .place_indices
-            .get(&p_id)
-            .expect("corrupted place indices store");
 
         if premoved_index != plast_index {
             // swap index
@@ -174,11 +208,7 @@ impl<
         p_id: TPlaceId,
     ) -> Result<TRange, PetriNetError<TPlaceId, TTransitionId, TRange>> {
         match self.place_indices.get(&p_id) {
-            Some(p_index) => Ok(self
-                .marking
-                .get(*p_index)
-                .expect("corrupted place indices store")
-                .clone()),
+            Some(p_index) => Ok(self.marking[*p_index]),
             None => Err(PetriNetError::UnknownPlace(p_id)),
         }
     }
@@ -233,15 +263,14 @@ impl<
         &mut self,
         t_id: TTransitionId,
     ) -> Result<(), PetriNetError<TPlaceId, TTransitionId, TRange>> {
-        if !self.transition_indices.contains_key(&t_id) {
+        let tremoved_index;
+        if let Some(index) = self.transition_indices.get(&t_id) {
+            tremoved_index = *index;
+        } else {
             return Err(PetriNetError::UnknownTransition(t_id));
         }
 
         let tlast_index = self.transition_index_head - 1;
-        let tremoved_index = *self
-            .transition_indices
-            .get(&t_id)
-            .expect("corrupted transition indices store");
 
         if tremoved_index != tlast_index {
             // swap index
@@ -272,6 +301,109 @@ impl<
         self.transition_index_head -= 1;
 
         Ok(())
+    }
+
+    pub fn add_input_arc(
+        &mut self,
+        source: TPlaceId,
+        target: TTransitionId,
+        weight: TRange,
+    ) -> Result<(), PetriNetError<TPlaceId, TTransitionId, TRange>> {
+        match self.place_indices.get(&source) {
+            Some(p_index) => match self.transition_indices.get(&target) {
+                Some(t_index) => {
+                    let cell = t_index * self.place_index_head + p_index;
+                    self.incidence_matrix[cell] = -weight.abs();
+                    Ok(())
+                }
+                None => Err(PetriNetError::UnknownTransition(target)),
+            },
+            None => Err(PetriNetError::UnknownPlace(source)),
+        }
+    }
+
+    pub fn remove_input_arc(
+        &mut self,
+        source: TPlaceId,
+        target: TTransitionId,
+    ) -> Result<(), PetriNetError<TPlaceId, TTransitionId, TRange>> {
+        match self.place_indices.get(&source) {
+            Some(p_index) => match self.transition_indices.get(&target) {
+                Some(t_index) => {
+                    let cell = t_index * self.place_index_head + p_index;
+                    self.incidence_matrix[cell] = TRange::zero();
+                    Ok(())
+                }
+                None => Err(PetriNetError::UnknownTransition(target)),
+            },
+            None => Err(PetriNetError::UnknownPlace(source)),
+        }
+    }
+
+    pub fn add_output_arc(
+        &mut self,
+        source: TTransitionId,
+        target: TPlaceId,
+        weight: TRange,
+    ) -> Result<(), PetriNetError<TPlaceId, TTransitionId, TRange>> {
+        match self.place_indices.get(&target) {
+            Some(p_index) => match self.transition_indices.get(&source) {
+                Some(t_index) => {
+                    let cell = t_index * self.place_index_head + p_index;
+                    self.incidence_matrix[cell] = weight.abs();
+                    Ok(())
+                }
+                None => Err(PetriNetError::UnknownTransition(source)),
+            },
+            None => Err(PetriNetError::UnknownPlace(target)),
+        }
+    }
+
+    pub fn remove_output_arc(
+        &mut self,
+        source: TTransitionId,
+        target: TPlaceId,
+    ) -> Result<(), PetriNetError<TPlaceId, TTransitionId, TRange>> {
+        match self.place_indices.get(&target) {
+            Some(p_index) => match self.transition_indices.get(&source) {
+                Some(t_index) => {
+                    let cell = t_index * self.place_index_head + p_index;
+                    self.incidence_matrix[cell] = TRange::zero();
+                    Ok(())
+                }
+                None => Err(PetriNetError::UnknownTransition(source)),
+            },
+            None => Err(PetriNetError::UnknownPlace(target)),
+        }
+    }
+
+    pub fn is_transition_enabled(
+        &self,
+        t_id: TTransitionId,
+    ) -> Result<bool, PetriNetError<TPlaceId, TTransitionId, TRange>> {
+        match self.transition_indices.get(&t_id) {
+            Some(t_index) => Ok(self.is_transition_enabled_internal(*t_index)),
+            None => Err(PetriNetError::UnknownTransition(t_id)),
+        }
+    }
+
+    #[inline]
+    fn is_transition_enabled_internal(&self, t_index: usize) -> bool {
+        self.marking
+            .iter()
+            .enumerate()
+            .all(|(p_index, &p_marking)| {
+                p_marking + self.incidence_matrix[t_index * self.place_index_head + p_index]
+                    >= TRange::zero()
+            })
+    }
+
+    #[inline]
+    pub fn is_unstable(&self) -> bool {
+        self.transition_indices
+            .values()
+            .into_iter()
+            .any(|t_index| self.is_transition_enabled_internal(*t_index))
     }
 }
 
@@ -325,7 +457,7 @@ mod tests {
     use super::*;
     use std::error::Error;
 
-    type TestPetriNet = PetriNet<&'static str, &'static str, i8>;
+    type TestPetriNet<'i> = PetriNet<&'i str, &'i str, i8>;
 
     #[test]
     fn add_and_remove_place() -> Result<(), Box<dyn Error>> {
@@ -346,6 +478,22 @@ mod tests {
     }
 
     #[test]
+    fn add_and_remove_many_places() -> Result<(), Box<dyn Error>> {
+        let mut net = TestPetriNet::new();
+        let mut ids: Vec<String> = Vec::new();
+        for i in 0..100 {
+            ids.push(format!("p{}", i));
+        }
+        for i in 0..100 {
+            net.add_place(ids[i].as_str(), 0).unwrap();
+        }
+        for i in 0..100 {
+            net.remove_place(ids[i].as_str()).unwrap();
+        }
+        Ok(())
+    }
+
+    #[test]
     fn add_and_remove_transition() -> Result<(), Box<dyn Error>> {
         let mut net = TestPetriNet::new();
         net.add_transition("t1", false)?;
@@ -358,6 +506,52 @@ mod tests {
         let mut net = TestPetriNet::new();
         net.add_transition("t1", false)?;
         assert!(matches!(net.add_transition("t1", true), Err(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn add_and_remove_many_transitions() -> Result<(), Box<dyn Error>> {
+        let mut net = TestPetriNet::new();
+        let mut ids: Vec<String> = Vec::new();
+        for i in 0..100 {
+            ids.push(format!("p{}", i));
+        }
+        for i in 0..100 {
+            net.add_transition(ids[i].as_str(), false).unwrap();
+        }
+        for i in 0..100 {
+            net.remove_transition(ids[i].as_str()).unwrap();
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn add_and_remove_arc() -> Result<(), Box<dyn Error>> {
+        let mut net = TestPetriNet::new();
+        net.add_place("p1", 1)?;
+        net.add_transition("t1", false)?;
+        net.add_input_arc("p1", "t1", 1)?;
+        net.remove_input_arc("p1", "t1")?;
+        Ok(())
+    }
+
+    #[test]
+    fn is_internal_transition_enabled() -> Result<(), Box<dyn Error>> {
+        let mut net = TestPetriNet::new();
+        net.add_place("p1", 1)?;
+        net.add_transition("t1", false)?;
+        net.add_input_arc("p1", "t1", 1)?;
+        assert!(net.is_transition_enabled("t1")?);
+        Ok(())
+    }
+
+    #[test]
+    fn is_external_transition_enabled() -> Result<(), Box<dyn Error>> {
+        let mut net = TestPetriNet::new();
+        net.add_place("p1", 1)?;
+        net.add_transition("t1", true)?;
+        net.add_input_arc("p1", "t1", 1)?;
+        assert!(net.is_transition_enabled("t1")?);
         Ok(())
     }
 }
