@@ -96,6 +96,15 @@ impl<
     /// * `PetriNetError::InvalidInitialMarking` - if the marking is negative
     /// * `PetriNetError::DuplicatePlace` - if the place id already exists
     ///
+    /// # Time Complexity
+    ///
+    /// Given:
+    /// - N = # number of transitions
+    /// - M = # number of places
+    ///
+    /// Resizing the matrix requires N `memcopy` operations to expand each row
+    /// which individually are O(M). Therefore, the final complexity is O(N*M).
+    ///
     pub fn add_place(
         &mut self,
         p_id: TPlaceId,
@@ -129,14 +138,14 @@ impl<
             // add column-sized chunk
             self.incidence_matrix
                 .extend(std::iter::repeat(TRange::zero()).take(self.transition_index_head));
+        }
 
-            // move rows by 1 in bulk starting at the end of the matrix
-            for t_index in (0..self.transition_index_head).rev() {
-                let row_index = t_index * self.place_index_head;
-                let row_range = row_index..row_index + self.place_index_head;
-                self.incidence_matrix.copy_within(row_range, row_index + 1);
-                self.incidence_matrix[row_index] = TRange::zero();
-            }
+        // move rows by 1 in bulk starting at the end of the matrix
+        for t_index in (0..self.transition_index_head).rev() {
+            let row_index = t_index * self.place_index_head;
+            let row_range = row_index..row_index + self.place_index_head;
+            self.incidence_matrix.copy_within(row_range, row_index + 1);
+            self.incidence_matrix[row_index] = TRange::zero();
         }
 
         Ok(())
@@ -150,6 +159,16 @@ impl<
     /// # Errors
     ///
     /// * `PetriNetError::UnkownPlace` - if the place id does not exists
+    ///
+    /// # Time Complexity
+    ///
+    /// Given:
+    /// - N = # number of transitions
+    /// - M = # number of places
+    ///
+    /// In the best case scenario, when the removed transition is at the last row
+    /// index in the matrix it is O(1). However, in the worst case, copying over
+    /// the matrix row is O(M).
     ///
     pub fn remove_place(
         &mut self,
@@ -229,6 +248,16 @@ impl<
     ///
     /// * `PetriNetError::DuplicateTransition` - if the transition id already exists
     ///
+    /// # Time Complexity
+    ///
+    /// Given:
+    /// - N = # number of transitions
+    /// - M = # number of places
+    ///
+    /// In the best case scenario, when the matrix is large enough to accomodate
+    /// a new transition, it is O(1). However, in the worst case, resizing the
+    /// matrix requires a full vector copy which is O(N*M).
+    ///
     pub fn add_transition(
         &mut self,
         t_id: TTransitionId,
@@ -264,6 +293,16 @@ impl<
     /// # Errors
     ///
     /// * `PetriNetError::UnkownTransition` - if the transition id does not exists
+    ///
+    /// # Time Complexity
+    ///
+    /// Given:
+    /// - N = # number of transitions
+    /// - M = # number of places
+    ///
+    /// In the best case scenario, when the removed transition is at the last row
+    /// index in the matrix it is O(1). However, in the worst case, copying over
+    /// the matrix row is O(M).
     ///
     pub fn remove_transition(
         &mut self,
