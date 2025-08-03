@@ -46,8 +46,10 @@ pub struct PetriNet<
     TTransitionId: Hash + Eq + Clone + fmt::Debug,
     TRange: PrimInt + Signed + fmt::Debug = i8,
 > {
-    /// 1D array storing initial marking for each place
+    /// 1D array storing current marking for each place
     marking: Vec<TRange>,
+    /// 1D array storing initial marking for each place
+    initial_marking: Vec<TRange>,
     /// 2D matrix storing weights between transitions (x) and places (y)
     incidence_matrix: Vec<TRange>,
 
@@ -71,6 +73,7 @@ impl<
     pub fn new() -> Self {
         PetriNet {
             marking: Vec::new(),
+            initial_marking: Vec::new(),
             incidence_matrix: Vec::new(),
             place_indices: HashMap::new(),
             place_ids: HashMap::new(),
@@ -115,8 +118,10 @@ impl<
         // ensure marking size
         if self.marking.len() > p_index {
             self.marking[p_index] = marking;
+            self.initial_marking[p_index] = marking;
         } else {
             self.marking.push(marking);
+            self.initial_marking.push(marking);
         }
 
         // ensure incidence matrix size
@@ -180,6 +185,7 @@ impl<
 
             // copy over marking
             self.marking[premoved_index] = self.marking[plast_index];
+            self.initial_marking[premoved_index] = self.initial_marking[plast_index];
         } else {
             self.place_ids.remove(&premoved_index);
         }
@@ -382,13 +388,13 @@ impl<
         t_id: TTransitionId,
     ) -> Result<bool, PetriNetError<TPlaceId, TTransitionId, TRange>> {
         match self.transition_indices.get(&t_id) {
-            Some(t_index) => Ok(self.is_transition_enabled_internal(*t_index)),
+            Some(t_index) => Ok(self._is_transition_enabled(*t_index)),
             None => Err(PetriNetError::UnknownTransition(t_id)),
         }
     }
 
     #[inline]
-    fn is_transition_enabled_internal(&self, t_index: usize) -> bool {
+    fn _is_transition_enabled(&self, t_index: usize) -> bool {
         self.marking
             .iter()
             .enumerate()
@@ -403,7 +409,12 @@ impl<
         self.transition_indices
             .values()
             .into_iter()
-            .any(|t_index| self.is_transition_enabled_internal(*t_index))
+            .any(|t_index| self._is_transition_enabled(*t_index))
+    }
+
+    #[inline]
+    pub fn reset(&mut self) {
+        self.marking.copy_from_slice(&self.initial_marking);
     }
 }
 
