@@ -36,15 +36,18 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     hash::Hash,
+    ops::AddAssign,
+    sync::mpsc::{Receiver, RecvError, SendError, Sender},
 };
 
 use num_traits::{PrimInt, Signed};
 
 /// A reactive Petri net implementation based on [Eshuis et al. from 2003](https://doi.org/10.1007/3-540-44919-1_20).
+#[derive(Debug)]
 pub struct PetriNet<
     TPlaceId: Hash + Eq + Clone + fmt::Debug,
     TTransitionId: Hash + Eq + Clone + fmt::Debug,
-    TRange: PrimInt + Signed + fmt::Debug = i8,
+    TRange: PrimInt + Signed + AddAssign + fmt::Debug = i8,
 > {
     /// 1D array storing current marking for each place
     marking: Vec<TRange>,
@@ -62,15 +65,18 @@ pub struct PetriNet<
 
     place_index_head: usize,
     transition_index_head: usize,
+
+    input_queue: Receiver<TTransitionId>,
+    output_queue: Sender<TTransitionId>,
 }
 
 impl<
         TPlaceId: Hash + Eq + Clone + fmt::Debug,
         TTransitionId: Hash + Eq + Clone + fmt::Debug,
-        TRange: PrimInt + Signed + fmt::Debug,
+        TRange: PrimInt + Signed + AddAssign + fmt::Debug,
     > PetriNet<TPlaceId, TTransitionId, TRange>
 {
-    pub fn new() -> Self {
+    pub fn new(input_queue: Receiver<TTransitionId>, output_queue: Sender<TTransitionId>) -> Self {
         PetriNet {
             marking: Vec::new(),
             initial_marking: Vec::new(),
@@ -82,6 +88,8 @@ impl<
             transition_ids: HashMap::new(),
             place_index_head: 0,
             transition_index_head: 0,
+            input_queue,
+            output_queue,
         }
     }
 
@@ -455,6 +463,48 @@ impl<
     pub fn reset(&mut self) {
         self.marking.copy_from_slice(&self.initial_marking);
     }
+
+    pub fn step(&mut self) -> Result<(), PetriNetError<TPlaceId, TTransitionId, TRange>> {
+        // due to the perfect synchrony hypothesis, we assume that internal reactions
+        // are always faster than the external system. Therefore, we fire internal
+        // transitions first until we reach stability.
+        for (t_id, t_index) in self.transition_indices.iter() {
+            if !self.transition_external.contains(t_id) && self._is_transition_enabled(*t_index) {
+                // the net is unstable
+                let row_index = t_index * self.place_index_head;
+                for p_index in 0..self.place_index_head {
+                    self.marking[p_index] += self.incidence_matrix[row_index + p_index];
+                }
+                return Ok(());
+            }
+        }
+
+        // the net is stable, we publish all enabled external transitions
+        for (t_id, t_index) in self.transition_indices.iter() {
+            if self.transition_external.contains(t_id) && self._is_transition_enabled(*t_index) {
+                self.output_queue.send(t_id.clone())?;
+            }
+        }
+
+        // then we wait for an external transition to complete
+        let t_id = self.input_queue.recv()?;
+
+        // we double check it is enabled and then fire it
+        match self.transition_indices.get(&t_id) {
+            Some(t_index) => {
+                if self._is_transition_enabled(*t_index) {
+                    let row_index = t_index * self.place_index_head;
+                    for p_index in 0..self.place_index_head {
+                        self.marking[p_index] += self.incidence_matrix[row_index + p_index];
+                    }
+                    Ok(())
+                } else {
+                    Err(PetriNetError::InvalidCompletionEvent(t_id))
+                }
+            }
+            None => Err(PetriNetError::UnknownTransition(t_id)),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -463,11 +513,14 @@ pub enum PetriNetError<
     TTransitionId: Hash + Eq + Clone + fmt::Debug,
     TRange: PrimInt + Signed + fmt::Debug,
 > {
-    InvalidInitialMarking(TRange),
     DuplicatePlace(TPlaceId),
     DuplicateTransition(TTransitionId),
     UnknownPlace(TPlaceId),
     UnknownTransition(TTransitionId),
+    SendError(SendError<TTransitionId>),
+    RecvError(RecvError),
+    InvalidInitialMarking(TRange),
+    InvalidCompletionEvent(TTransitionId),
 }
 
 impl<
@@ -478,13 +531,18 @@ impl<
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PetriNetError::InvalidInitialMarking(marking) => {
-                write!(f, "InvalidInitialMarking {:?}", marking)
-            }
             PetriNetError::DuplicatePlace(p_id) => write!(f, "DuplicatePlace {:?}", p_id),
             PetriNetError::DuplicateTransition(t_id) => write!(f, "DuplicateTransition {:?}", t_id),
             PetriNetError::UnknownPlace(p_id) => write!(f, "UnknownPlace {:?}", p_id),
             PetriNetError::UnknownTransition(t_id) => write!(f, "UnknownTransition {:?}", t_id),
+            PetriNetError::SendError(err) => write!(f, "SendError {:?}", err),
+            PetriNetError::RecvError(err) => write!(f, "RecvError {:?}", err),
+            PetriNetError::InvalidInitialMarking(marking) => {
+                write!(f, "InvalidInitialMarking {:?}", marking)
+            }
+            PetriNetError::InvalidCompletionEvent(t_id) => {
+                write!(f, "InvalidCompletionEvent {:?}", t_id)
+            }
         }
     }
 }
@@ -502,16 +560,40 @@ impl<
     }
 }
 
+impl<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+        TRange: PrimInt + Signed + fmt::Debug,
+    > From<SendError<TTransitionId>> for PetriNetError<TPlaceId, TTransitionId, TRange>
+{
+    fn from(value: SendError<TTransitionId>) -> Self {
+        PetriNetError::SendError(value)
+    }
+}
+
+impl<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+        TRange: PrimInt + Signed + fmt::Debug,
+    > From<RecvError> for PetriNetError<TPlaceId, TTransitionId, TRange>
+{
+    fn from(value: RecvError) -> Self {
+        PetriNetError::RecvError(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::error::Error;
+    use std::{error::Error, sync::mpsc};
 
     type TestPetriNet<'i> = PetriNet<&'i str, &'i str, i8>;
 
     #[test]
     fn add_and_remove_place() -> Result<(), Box<dyn Error>> {
-        let mut net = TestPetriNet::new();
+        let (_, input_rx) = mpsc::channel();
+        let (output_tx, _) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
         net.add_place("p1", 2)?;
         assert_eq!(net.get_tokens("p1")?, 2);
         net.remove_place("p1")?;
@@ -521,7 +603,9 @@ mod tests {
 
     #[test]
     fn add_same_place_fails() -> Result<(), Box<dyn Error>> {
-        let mut net = TestPetriNet::new();
+        let (_, input_rx) = mpsc::channel();
+        let (output_tx, _) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
         net.add_place("p1", 0)?;
         assert!(matches!(net.add_place("p1", 1), Err(_)));
         Ok(())
@@ -529,8 +613,12 @@ mod tests {
 
     #[test]
     fn add_and_remove_many_places() -> Result<(), Box<dyn Error>> {
-        let mut net = TestPetriNet::new();
         let mut ids: Vec<String> = Vec::new();
+
+        let (_, input_rx) = mpsc::channel();
+        let (output_tx, _) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
+
         for i in 0..100 {
             ids.push(format!("p{}", i));
         }
@@ -540,12 +628,15 @@ mod tests {
         for i in 0..100 {
             net.remove_place(ids[i].as_str()).unwrap();
         }
+
         Ok(())
     }
 
     #[test]
     fn add_and_remove_transition() -> Result<(), Box<dyn Error>> {
-        let mut net = TestPetriNet::new();
+        let (_, input_rx) = mpsc::channel();
+        let (output_tx, _) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
         net.add_transition("t1", false)?;
         net.remove_transition("t1")?;
         Ok(())
@@ -553,7 +644,9 @@ mod tests {
 
     #[test]
     fn add_same_transition_fails() -> Result<(), Box<dyn Error>> {
-        let mut net = TestPetriNet::new();
+        let (_, input_rx) = mpsc::channel();
+        let (output_tx, _) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
         net.add_transition("t1", false)?;
         assert!(matches!(net.add_transition("t1", true), Err(_)));
         Ok(())
@@ -561,8 +654,12 @@ mod tests {
 
     #[test]
     fn add_and_remove_many_transitions() -> Result<(), Box<dyn Error>> {
-        let mut net = TestPetriNet::new();
         let mut ids: Vec<String> = Vec::new();
+
+        let (_, input_rx) = mpsc::channel();
+        let (output_tx, _) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
+
         for i in 0..100 {
             ids.push(format!("p{}", i));
         }
@@ -577,7 +674,9 @@ mod tests {
 
     #[test]
     fn add_and_remove_arc() -> Result<(), Box<dyn Error>> {
-        let mut net = TestPetriNet::new();
+        let (_, input_rx) = mpsc::channel();
+        let (output_tx, _) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
         net.add_place("p1", 1)?;
         net.add_transition("t1", false)?;
         net.add_input_arc("p1", "t1", 1)?;
@@ -587,7 +686,9 @@ mod tests {
 
     #[test]
     fn is_internal_transition_enabled() -> Result<(), Box<dyn Error>> {
-        let mut net = TestPetriNet::new();
+        let (_, input_rx) = mpsc::channel();
+        let (output_tx, _) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
         net.add_place("p1", 1)?;
         net.add_transition("t1", false)?;
         net.add_input_arc("p1", "t1", 1)?;
@@ -597,11 +698,83 @@ mod tests {
 
     #[test]
     fn is_external_transition_enabled() -> Result<(), Box<dyn Error>> {
-        let mut net = TestPetriNet::new();
+        let (_, input_rx) = mpsc::channel();
+        let (output_tx, _) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
         net.add_place("p1", 1)?;
         net.add_transition("t1", true)?;
         net.add_input_arc("p1", "t1", 1)?;
         assert!(net.is_transition_enabled("t1")?);
+        Ok(())
+    }
+
+    #[test]
+    fn sequential_workflow() -> Result<(), Box<dyn Error>> {
+        let (_, input_rx) = mpsc::channel();
+        let (output_tx, _) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
+
+        net.add_place("Start", 1)?;
+        net.add_place("Middle", 0)?;
+        net.add_place("End", 0)?;
+
+        net.add_transition("StepA", false)?;
+        net.add_transition("StepB", false)?;
+
+        net.add_input_arc("Start", "StepA", 1)?;
+        net.add_output_arc("StepA", "Middle", 1)?;
+        net.add_input_arc("Middle", "StepB", 1)?;
+        net.add_output_arc("StepB", "End", 1)?;
+
+        assert!(net.is_transition_enabled("StepA")?);
+
+        net.step()?;
+
+        assert!(!net.is_transition_enabled("StepA")?);
+        assert!(net.is_transition_enabled("StepB")?);
+
+        net.step()?;
+
+        assert!(!net.is_transition_enabled("StepB")?);
+        assert!(!net.is_unstable());
+
+        Ok(())
+    }
+
+    #[test]
+    fn forkjoin() -> Result<(), Box<dyn Error>> {
+        let (_, input_rx) = mpsc::channel();
+        let (output_tx, _) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
+
+        net.add_place("Start", 1)?;
+        net.add_place("P1", 0)?;
+        net.add_place("P2", 0)?;
+        net.add_place("End", 0)?;
+
+        net.add_transition("Fork", false)?;
+        net.add_transition("Join", false)?;
+
+        net.add_input_arc("Start", "Fork", 1)?;
+        net.add_output_arc("Fork", "P1", 1)?;
+        net.add_output_arc("Fork", "P2", 1)?;
+
+        net.add_input_arc("P1", "Join", 1)?;
+        net.add_input_arc("P2", "Join", 1)?;
+        net.add_output_arc("Join", "End", 1)?;
+
+        assert!(net.is_transition_enabled("Fork")?);
+
+        net.step()?;
+
+        assert!(!net.is_transition_enabled("Fork")?);
+        assert!(net.is_transition_enabled("Join")?);
+
+        net.step()?;
+
+        assert!(!net.is_transition_enabled("Join")?);
+        assert!(!net.is_unstable());
+
         Ok(())
     }
 }

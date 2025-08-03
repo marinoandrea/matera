@@ -8,7 +8,7 @@ published in 2003](https://doi.org/10.1007/3-540-44919-1_20).
 
 Feature overview and progress:
 
-- [ ] incidence matrix and marking array base implementation
-- [ ] full-duplex event queue for environment interaction
-- [ ] asynchronous support
+- [x] incidence matrix and marking array base implementation
+- [x] full-duplex event queue for environment interaction
+- [ ] ~~asynchronous support~~ using `mpsc::channel` seems cleaner for now
 - [ ] SIMD optimization based on `TRange` type
