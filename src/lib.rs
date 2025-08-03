@@ -1,8 +1,9 @@
-//! Reactive Petri nets implementation.
+//! A Petri net library for reactive workflow modelling in Rust, optimised for step-wise simulation speed.
 //!
-//! Reactive Petri nets differ from normal ones because they can interact with an
-//! external system. Therefore, the token-game semantics are modified to account
-//! for asynchronous interactions with an environment that the net is monitoring.
+//! Reactive Petri nets, as defined by [Eshuis et al. in 2003](https://doi.org/10.1007/3-540-44919-1_20),
+//! differ from normal ones because they can interact with an external system.
+//! Therefore, the token-game semantics are modified to account for asynchronous
+//! interactions with an environment that the net is monitoring.
 //!
 //! To achieve this, the net distinguishes between _internal_ and _external_ transitions.
 //! We call a net _stable_ if all its internal transitions are disabled, _unstable_
@@ -10,6 +11,39 @@
 //! internal transitions are always faster that external ones. Based on these definitions,
 //! the net operates in two different modes: it either executes internal transitions until
 //! it reaches stability, or it executes external ones one at a time.
+//!
+//! # Basic Usage
+//!
+//! [`PetriNet`] is a graph-like data-structure which is fully resizable and can
+//! be initialized using [`PetriNet::new`] to start with an empty graph. It exposes
+//! functions to modify place nodes, transition nodes, and arc weights.
+//!
+//! The struct is meant to be used in step-wise simulation mode by calling the [`PetriNet::step`]
+//! function which performs a transition at every step (either internal or external).
+//! Internal transitions are always prioritized.
+//!
+//! ## Example
+//!
+//!     use matera::PetriNet;
+//!     use std::sync::mpsc;
+//!
+//!     let (_, input_rx) = mpsc::channel();
+//!     let (output_tx, _) = mpsc::channel();
+//!     let mut net = PetriNet::new(input_rx, output_tx);
+//!
+//!     net.add_place("Start", 1)?;
+//!     net.add_place("Middle", 0)?;
+//!     net.add_place("End", 0)?;
+//!
+//!     net.add_transition("StepA", false)?;
+//!     net.add_transition("StepB", false)?;
+//!
+//!     net.add_input_arc("Start", "StepA", 1)?;
+//!     net.add_output_arc("StepA", "Middle", 1)?;
+//!     net.add_input_arc("Middle", "StepB", 1)?;
+//!     net.add_output_arc("StepB", "End", 1)?;
+//!
+//!     net.step()?;
 //!
 use std::{
     collections::{HashMap, HashSet},
@@ -21,7 +55,7 @@ use std::{
 
 use num_traits::{PrimInt, Signed};
 
-/// A reactive Petri net implementation based on [Eshuis et al. from 2003](https://doi.org/10.1007/3-540-44919-1_20).
+/// A stateful reactive Petri net.
 ///
 /// The net is implemented using an incidence matrix and marking array approach.
 ///
