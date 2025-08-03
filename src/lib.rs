@@ -86,6 +86,10 @@ impl<
 
         // ensure incidence matrix size
         if self.place_index_head * self.transition_index_head > self.incidence_matrix.len() {
+            // add column-sized chunk
+            self.incidence_matrix
+                .extend(std::iter::repeat(TRange::zero()).take(self.transition_index_head));
+
             // move rows by 1 in bulk starting at the end of the matrix
             for t_index in (0..self.transition_index_head).rev() {
                 let row_index = t_index * self.place_index_head;
