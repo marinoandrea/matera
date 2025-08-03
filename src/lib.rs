@@ -584,6 +584,14 @@ impl<
         self.marking.copy_from_slice(&self.initial_marking);
     }
 
+    /// Fire the given transition.
+    fn fire(&mut self, t_index: usize) {
+        let row_index = t_index * self.place_index_head;
+        for p_index in 0..self.place_index_head {
+            self.marking[p_index] += self.incidence_matrix[row_index + p_index];
+        }
+    }
+
     /// Perform one step of the simulation.
     ///
     /// # Arguments
@@ -612,10 +620,7 @@ impl<
         for (t_id, t_index) in self.transition_indices.iter() {
             if !self.transition_external.contains(t_id) && self._is_transition_enabled(*t_index) {
                 // the net is unstable
-                let row_index = t_index * self.place_index_head;
-                for p_index in 0..self.place_index_head {
-                    self.marking[p_index] += self.incidence_matrix[row_index + p_index];
-                }
+                self.fire(*t_index);
                 return Ok(());
             }
         }
@@ -634,10 +639,7 @@ impl<
         match self.transition_indices.get(&t_id) {
             Some(t_index) => {
                 if self._is_transition_enabled(*t_index) {
-                    let row_index = t_index * self.place_index_head;
-                    for p_index in 0..self.place_index_head {
-                        self.marking[p_index] += self.incidence_matrix[row_index + p_index];
-                    }
+                    self.fire(*t_index);
                     Ok(())
                 } else {
                     Err(PetriNetError::InvalidCompletionEvent(t_id))
