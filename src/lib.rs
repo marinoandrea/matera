@@ -31,19 +31,19 @@
 //!     let (output_tx, _) = mpsc::channel();
 //!     let mut net = PetriNet::new(input_rx, output_tx);
 //!
-//!     net.add_place("Start", 1)?;
-//!     net.add_place("Middle", 0)?;
-//!     net.add_place("End", 0)?;
+//!     net.add_place("Start", 1);
+//!     net.add_place("Middle", 0);
+//!     net.add_place("End", 0);
 //!
-//!     net.add_transition("StepA", false)?;
-//!     net.add_transition("StepB", false)?;
+//!     net.add_transition("StepA", false);
+//!     net.add_transition("StepB", false);
 //!
-//!     net.add_input_arc("Start", "StepA", 1)?;
-//!     net.add_output_arc("StepA", "Middle", 1)?;
-//!     net.add_input_arc("Middle", "StepB", 1)?;
-//!     net.add_output_arc("StepB", "End", 1)?;
+//!     net.add_input_arc("Start", "StepA", 1);
+//!     net.add_output_arc("StepA", "Middle", 1);
+//!     net.add_input_arc("Middle", "StepB", 1);
+//!     net.add_output_arc("StepB", "End", 1);
 //!
-//!     net.step()?;
+//!     net.step();
 //!
 use std::{
     collections::{HashMap, HashSet},
@@ -908,6 +908,67 @@ mod tests {
         net.step()?;
 
         assert!(!net.is_transition_enabled("Join")?);
+        assert!(!net.is_unstable());
+
+        Ok(())
+    }
+
+    #[test]
+    fn hungry_philosophers() -> Result<(), Box<dyn Error>> {
+        let (_, input_rx) = mpsc::channel();
+        let (output_tx, _) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
+
+        net.add_place("Fork1", 1)?;
+        net.add_place("Fork2", 1)?;
+        net.add_place("Hungry1", 1)?;
+        net.add_place("Hungry2", 1)?;
+        net.add_place("Eating1", 0)?;
+        net.add_place("Eating2", 0)?;
+
+        net.add_transition("StartEating1", false)?;
+        net.add_transition("FinishEating1", false)?;
+        net.add_transition("StartEating2", false)?;
+        net.add_transition("FinishEating2", false)?;
+
+        net.add_input_arc("Hungry1", "StartEating1", 1)?;
+        net.add_input_arc("Fork1", "StartEating1", 1)?;
+        net.add_input_arc("Fork2", "StartEating1", 1)?;
+        net.add_output_arc("StartEating1", "Eating1", 1)?;
+        net.add_input_arc("Eating1", "FinishEating1", 1)?;
+        net.add_output_arc("FinishEating1", "Fork1", 1)?;
+        net.add_output_arc("FinishEating1", "Fork2", 1)?;
+        net.add_input_arc("Hungry2", "StartEating2", 1)?;
+        net.add_input_arc("Fork1", "StartEating2", 1)?;
+        net.add_input_arc("Fork2", "StartEating2", 1)?;
+        net.add_output_arc("StartEating2", "Eating2", 1)?;
+        net.add_input_arc("Eating2", "FinishEating2", 1)?;
+        net.add_output_arc("FinishEating2", "Fork1", 1)?;
+        net.add_output_arc("FinishEating2", "Fork2", 1)?;
+
+        //both philosophers can start eating
+        assert!(net.is_transition_enabled("StartEating1")?);
+        assert!(net.is_transition_enabled("StartEating2")?);
+
+        // firing order should be left to the implementation and not be assumed
+        for i in 0..2 {
+            net.step()?;
+
+            // stepping means one philosopher prevails depending on the internal order
+            assert!(!net.is_transition_enabled("StartEating1")?);
+            assert!(!net.is_transition_enabled("StartEating2")?);
+
+            if net.is_transition_enabled("FinishEating1")? {
+                net.step()?;
+                assert!(net.is_transition_enabled("StartEating2")? || i == 1)
+            } else if net.is_transition_enabled("FinishEating2")? {
+                net.step()?;
+                assert!(net.is_transition_enabled("StartEating1")? || i == 1)
+            } else {
+                panic!("no philosopher is eating")
+            }
+        }
+
         assert!(!net.is_unstable());
 
         Ok(())
