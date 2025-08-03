@@ -981,4 +981,83 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn forkjoin_external() -> Result<(), Box<dyn Error>> {
+        let (input_tx, input_rx) = mpsc::channel();
+        let (output_tx, output_rx) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
+
+        net.add_place("Start", 1)?;
+        net.add_place("P1", 0)?;
+        net.add_place("P2", 0)?;
+        net.add_place("P3", 0)?;
+        net.add_place("P4", 0)?;
+        net.add_place("End", 0)?;
+
+        net.add_transition("Fork", false)?;
+        net.add_transition("External", true)?;
+        net.add_transition("Internal", false)?;
+        net.add_transition("Join", false)?;
+
+        net.add_input_arc("Start", "Fork", 1)?;
+        net.add_output_arc("Fork", "P1", 1)?;
+        net.add_output_arc("Fork", "P2", 1)?;
+        net.add_input_arc("P1", "External", 1)?;
+        net.add_input_arc("P2", "Internal", 1)?;
+        net.add_output_arc("External", "P3", 1)?;
+        net.add_output_arc("Internal", "P4", 1)?;
+        net.add_input_arc("P3", "Join", 1)?;
+        net.add_input_arc("P4", "Join", 1)?;
+        net.add_output_arc("Join", "End", 1)?;
+
+        assert!(net.is_transition_enabled("Fork")?);
+
+        net.step()?;
+
+        // the initial fork should produce tokens
+        assert!(net.get_tokens("P1")? == 1);
+        assert!(net.get_tokens("P2")? == 1);
+        assert!(net.get_tokens("P3")? == 0);
+        assert!(net.get_tokens("P4")? == 0);
+        assert!(net.is_transition_enabled("External")?);
+        assert!(net.is_transition_enabled("Internal")?);
+
+        net.step()?;
+
+        // we check that the internal transition has been performed first
+        assert!(net.get_tokens("P1")? == 1);
+        assert!(net.get_tokens("P2")? == 0);
+        assert!(net.get_tokens("P3")? == 0);
+        assert!(net.get_tokens("P4")? == 1);
+
+        // then we step in a separate thread to avoid hanging
+        let handle = std::thread::spawn(move || {
+            let mut net = net;
+            net.step().unwrap(); // external transition
+            net
+        });
+
+        // and have announced the transition
+        assert_eq!(output_rx.recv()?, "External");
+
+        // we manually push the completion event
+        input_tx.send("External")?;
+
+        // and wait for the step to take place
+        let mut net = handle.join().unwrap();
+
+        // we should now be ready to join
+        assert!(net.get_tokens("P1")? == 0);
+        assert!(net.get_tokens("P2")? == 0);
+        assert!(net.get_tokens("P3")? == 1);
+        assert!(net.get_tokens("P4")? == 1);
+        assert!(net.is_transition_enabled("Join")?);
+
+        net.step()?;
+
+        assert!(!net.is_unstable());
+
+        Ok(())
+    }
 }
