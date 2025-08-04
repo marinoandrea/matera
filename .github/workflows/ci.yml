@@ -14,6 +14,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Show Rust version
+        run: rustc --version
+
+      - name: Show Cargo version
+        run: cargo --version
+
+      - name: Show rustc flags
+        run: echo $RUSTFLAGS
+
       - name: Cache cargo registry and build
         uses: actions/cache@v3
         with:

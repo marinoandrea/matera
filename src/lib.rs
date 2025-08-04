@@ -1579,4 +1579,46 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn simd_i8() -> Result<(), Box<dyn Error>> {
+        let mut p_ids: Vec<String> = Vec::new();
+        let mut t_ids: Vec<String> = Vec::new();
+
+        let (_, input_rx) = mpsc::channel();
+        let (output_tx, _) = mpsc::channel();
+        let mut net = TestPetriNet::new(input_rx, output_tx);
+
+        // we need at least 16 for simd to be used
+        const SIZE: usize = 16;
+
+        for i in 0..SIZE {
+            p_ids.push(format!("p{}", i));
+            t_ids.push(format!("t{}", i));
+        }
+        for i in 0..SIZE {
+            net.add_place(p_ids[i].as_str(), if i == 0 { 1 } else { 0 })
+                .unwrap();
+        }
+        for i in 0..SIZE - 1 {
+            net.add_transition(t_ids[i].as_str(), false).unwrap();
+        }
+        for i in 0..SIZE - 1 {
+            net.add_input_arc(p_ids[i].as_str(), t_ids[i].as_str(), 1)
+                .unwrap();
+            net.add_output_arc(t_ids[i].as_str(), p_ids[i + 1].as_str(), 1)
+                .unwrap();
+        }
+
+        assert!(net.is_transition_enabled("t0").unwrap());
+
+        for i in 0..SIZE - 1 {
+            assert!(net.is_transition_enabled(t_ids[i].as_str()).unwrap());
+            net.step().unwrap();
+        }
+
+        assert!(!net.is_unstable());
+
+        Ok(())
+    }
 }
