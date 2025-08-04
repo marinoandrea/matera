@@ -4,4 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+cfg-if = "1.0.1"
 num-traits = "0.2.19"
+
+[profile.release]
+codegen-units = 1
+lto = true

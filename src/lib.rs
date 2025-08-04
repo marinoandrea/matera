@@ -53,6 +53,7 @@ use std::{
     sync::mpsc::{Receiver, RecvError, SendError, Sender},
 };
 
+use cfg_if::cfg_if;
 use num_traits::{PrimInt, Signed};
 
 /// A stateful reactive Petri net.
@@ -80,7 +81,7 @@ use num_traits::{PrimInt, Signed};
 pub struct PetriNet<
     TPlaceId: Hash + Eq + Clone + fmt::Debug,
     TTransitionId: Hash + Eq + Clone + fmt::Debug,
-    TRange: PrimInt + Signed + AddAssign + fmt::Debug = i8,
+    TRange: TokenGame = i8,
 > {
     /// 1D array storing current marking for each place
     marking: Vec<TRange>,
@@ -106,7 +107,7 @@ pub struct PetriNet<
 impl<
         TPlaceId: Hash + Eq + Clone + fmt::Debug,
         TTransitionId: Hash + Eq + Clone + fmt::Debug,
-        TRange: PrimInt + Signed + AddAssign + fmt::Debug,
+        TRange: TokenGame,
     > PetriNet<TPlaceId, TTransitionId, TRange>
 {
     /// Create a new empty Petri net.
@@ -597,11 +598,9 @@ impl<
     }
 
     /// Fire the given transition.
+    #[inline]
     fn fire(&mut self, t_index: usize) {
-        let row_index = t_index * self.place_index_head;
-        for p_index in 0..self.place_index_head {
-            self.marking[p_index] += self.incidence_matrix[row_index + p_index];
-        }
+        TRange::fire(self, t_index);
     }
 
     /// Perform one step of the simulation.
@@ -662,11 +661,218 @@ impl<
     }
 }
 
+/// Represents the way in which different integer types are handled when
+/// firing transitions over a given maximum range of tokens.
+///
+/// This trait allows for type-specific optimizations, such as SIMD, for each
+/// possible entry of the generic type [`TRange`] in a [`PetriNet`].
+///
+pub trait TokenGame: PrimInt + Signed + AddAssign + fmt::Debug {
+    fn fire<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &mut PetriNet<TPlaceId, TTransitionId, Self>,
+        t_index: usize,
+    );
+}
+
+impl TokenGame for i8 {
+    fn fire<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &mut PetriNet<TPlaceId, TTransitionId, i8>,
+        t_index: usize,
+    ) {
+        let row_index = t_index * net.place_index_head;
+        let chunks: usize;
+        let remainder: usize;
+
+        cfg_if! {
+            if #[cfg(target_feature = "neon")]
+            {
+                use core::arch::aarch64::*;
+                chunks = net.place_index_head / 16;
+                remainder = net.place_index_head % 16;
+
+                unsafe {
+                    for i in 0..chunks {
+                        let offset = row_index + i * 16;
+                        let va = vld1q_s8(net.marking.as_ptr());
+                        let vb = vld1q_s8(net.incidence_matrix.as_ptr().add(offset));
+                        let vc = vaddq_s8(va, vb);
+                        vst1q_s8(net.marking.as_mut_ptr(), vc);
+                    }
+                }
+            } else {
+                chunks = 1;
+                remainder = 0;
+            }
+        }
+
+        // deal with remainder sequentially
+        for i in (net.place_index_head - remainder)..net.place_index_head {
+            net.marking[i] += net.incidence_matrix[row_index + i];
+        }
+    }
+}
+
+impl TokenGame for i16 {
+    fn fire<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &mut PetriNet<TPlaceId, TTransitionId, Self>,
+        t_index: usize,
+    ) {
+        let row_index = t_index * net.place_index_head;
+        let chunks: usize;
+        let remainder: usize;
+
+        cfg_if! {
+            if #[cfg(target_feature = "neon")]
+            {
+                use core::arch::aarch64::*;
+                chunks = net.place_index_head / 8;
+                remainder = net.place_index_head % 8;
+                unsafe {
+                    for i in 0..chunks {
+                        let offset = row_index + i * 8;
+                        let va = vld1q_s16(net.marking.as_ptr());
+                        let vb = vld1q_s16(net.incidence_matrix.as_ptr().add(offset));
+                        let vc = vaddq_s16(va, vb);
+                        vst1q_s16(net.marking.as_mut_ptr(), vc);
+                    }
+                }
+            } else {
+                chunks = 1;
+                remainder = 0;
+            }
+        }
+
+        // deal with remainder sequentially
+        for i in (net.place_index_head - remainder)..net.place_index_head {
+            net.marking[i] += net.incidence_matrix[row_index + i];
+        }
+    }
+}
+
+impl TokenGame for i32 {
+    fn fire<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &mut PetriNet<TPlaceId, TTransitionId, Self>,
+        t_index: usize,
+    ) {
+        let row_index = t_index * net.place_index_head;
+        let chunks: usize;
+        let remainder: usize;
+
+        cfg_if! {
+            if #[cfg(target_feature = "neon")]
+            {
+                use core::arch::aarch64::*;
+                chunks = net.place_index_head / 4;
+                remainder = net.place_index_head % 4;
+                unsafe {
+                    for i in 0..chunks {
+                        let offset = row_index + i * 4;
+                        let va = vld1q_s32(net.marking.as_ptr());
+                        let vb = vld1q_s32(net.incidence_matrix.as_ptr().add(offset));
+                        let vc = vaddq_s32(va, vb);
+                        vst1q_s32(net.marking.as_mut_ptr(), vc);
+                    }
+                }
+            } else {
+                chunks = 1;
+                remainder = 0;
+            }
+        }
+
+        // deal with remainder sequentially
+        for i in (net.place_index_head - remainder)..net.place_index_head {
+            net.marking[i] += net.incidence_matrix[row_index + i];
+        }
+    }
+}
+
+impl TokenGame for i64 {
+    fn fire<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &mut PetriNet<TPlaceId, TTransitionId, Self>,
+        t_index: usize,
+    ) {
+        let row_index = t_index * net.place_index_head;
+        let chunks: usize;
+        let remainder: usize;
+
+        cfg_if! {
+            if #[cfg(target_feature = "neon")]
+            {
+                use core::arch::aarch64::*;
+                chunks = net.place_index_head / 2;
+                remainder = net.place_index_head % 2;
+                unsafe {
+                    for i in 0..chunks {
+                        let offset = row_index + i * 2;
+                        let va = vld1q_s64(net.marking.as_ptr());
+                        let vb = vld1q_s64(net.incidence_matrix.as_ptr().add(offset));
+                        let vc = vaddq_s64(va, vb);
+                        vst1q_s64(net.marking.as_mut_ptr(), vc);
+                    }
+                }
+            } else {
+                chunks = 1;
+                remainder = 0;
+            }
+        }
+
+        // deal with remainder sequentially
+        for i in (net.place_index_head - remainder)..net.place_index_head {
+            net.marking[i] += net.incidence_matrix[row_index + i];
+        }
+    }
+}
+
+impl TokenGame for i128 {
+    fn fire<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &mut PetriNet<TPlaceId, TTransitionId, Self>,
+        t_index: usize,
+    ) {
+        let row_index = t_index * net.place_index_head;
+        for i in 0..net.place_index_head {
+            net.marking[i] += net.incidence_matrix[row_index + i];
+        }
+    }
+}
+
+impl TokenGame for isize {
+    fn fire<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &mut PetriNet<TPlaceId, TTransitionId, Self>,
+        t_index: usize,
+    ) {
+        let row_index = t_index * net.place_index_head;
+        for i in 0..net.place_index_head {
+            net.marking[i] += net.incidence_matrix[row_index + i];
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum PetriNetError<
     TPlaceId: Hash + Eq + Clone + fmt::Debug,
     TTransitionId: Hash + Eq + Clone + fmt::Debug,
-    TRange: PrimInt + Signed + fmt::Debug,
+    TRange: TokenGame,
 > {
     DuplicatePlace(TPlaceId),
     DuplicateTransition(TTransitionId),
@@ -682,7 +888,7 @@ pub enum PetriNetError<
 impl<
         TPlaceId: Hash + Eq + Clone + fmt::Debug,
         TTransitionId: Hash + Eq + Clone + fmt::Debug,
-        TRange: PrimInt + Signed + fmt::Debug,
+        TRange: TokenGame,
     > fmt::Display for PetriNetError<TPlaceId, TTransitionId, TRange>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -709,7 +915,7 @@ impl<
 impl<
         TPlaceId: Hash + Eq + Clone + fmt::Debug,
         TTransitionId: Hash + Eq + Clone + fmt::Debug,
-        TRange: PrimInt + Signed + fmt::Debug,
+        TRange: TokenGame,
     > std::error::Error for PetriNetError<TPlaceId, TTransitionId, TRange>
 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
@@ -722,7 +928,7 @@ impl<
 impl<
         TPlaceId: Hash + Eq + Clone + fmt::Debug,
         TTransitionId: Hash + Eq + Clone + fmt::Debug,
-        TRange: PrimInt + Signed + fmt::Debug,
+        TRange: TokenGame,
     > From<SendError<TTransitionId>> for PetriNetError<TPlaceId, TTransitionId, TRange>
 {
     fn from(value: SendError<TTransitionId>) -> Self {
@@ -733,7 +939,7 @@ impl<
 impl<
         TPlaceId: Hash + Eq + Clone + fmt::Debug,
         TTransitionId: Hash + Eq + Clone + fmt::Debug,
-        TRange: PrimInt + Signed + fmt::Debug,
+        TRange: TokenGame,
     > From<RecvError> for PetriNetError<TPlaceId, TTransitionId, TRange>
 {
     fn from(value: RecvError) -> Self {
