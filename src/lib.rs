@@ -572,13 +572,7 @@ impl<
 
     #[inline]
     fn _is_transition_enabled(&self, t_index: usize) -> bool {
-        self.marking
-            .iter()
-            .enumerate()
-            .all(|(p_index, &p_marking)| {
-                p_marking + self.incidence_matrix[t_index * self.place_index_head + p_index]
-                    >= TRange::zero()
-            })
+        TRange::is_transition_enabled(self, t_index)
     }
 
     /// Check whether the net is unstable.
@@ -675,6 +669,14 @@ pub trait TokenGame: PrimInt + Signed + AddAssign + fmt::Debug {
         net: &mut PetriNet<TPlaceId, TTransitionId, Self>,
         t_index: usize,
     );
+
+    fn is_transition_enabled<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &PetriNet<TPlaceId, TTransitionId, Self>,
+        t_index: usize,
+    ) -> bool;
 }
 
 impl TokenGame for i8 {
@@ -716,6 +718,55 @@ impl TokenGame for i8 {
             net.marking[i] += net.incidence_matrix[row_index + i];
         }
     }
+
+    fn is_transition_enabled<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &PetriNet<TPlaceId, TTransitionId, Self>,
+        t_index: usize,
+    ) -> bool {
+        let row_index = t_index * net.place_index_head;
+        let chunks: usize;
+        let remainder: usize;
+
+        cfg_if! {
+            if #[cfg(target_feature = "neon")]
+            {
+                use core::arch::aarch64::*;
+                chunks = net.place_index_head / 16;
+                remainder = net.place_index_head % 16;
+
+                unsafe {
+                    let zero = vdupq_n_s8(0);
+                    for i in 0..chunks {
+                        let offset = row_index + i * 16;
+                        let va = vld1q_s8(net.marking.as_ptr());
+                        let vb = vld1q_s8(net.incidence_matrix.as_ptr().add(offset));
+                        let vc = vaddq_s8(va, vb);
+                        let mask = vcgeq_s8(vc, zero);
+                        let mask_u8: uint8x16_t = core::mem::transmute(mask);
+                        let min = vminvq_u8(mask_u8);
+                        if min != 0xFF {
+                            return false;
+                        }
+                    }
+                }
+            } else {
+                chunks = 1;
+                remainder = 0;
+            }
+        }
+
+        // deal with remainder sequentially
+        for i in (net.place_index_head - remainder)..net.place_index_head {
+            if net.marking[i] + net.incidence_matrix[row_index + i] < 0 {
+                return false;
+            }
+        }
+
+        true
+    }
 }
 
 impl TokenGame for i16 {
@@ -755,6 +806,55 @@ impl TokenGame for i16 {
         for i in (net.place_index_head - remainder)..net.place_index_head {
             net.marking[i] += net.incidence_matrix[row_index + i];
         }
+    }
+
+    fn is_transition_enabled<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &PetriNet<TPlaceId, TTransitionId, Self>,
+        t_index: usize,
+    ) -> bool {
+        let row_index = t_index * net.place_index_head;
+        let chunks: usize;
+        let remainder: usize;
+
+        cfg_if! {
+            if #[cfg(target_feature = "neon")]
+            {
+                use core::arch::aarch64::*;
+                chunks = net.place_index_head / 8;
+                remainder = net.place_index_head % 8;
+
+                unsafe {
+                    let zero = vdupq_n_s16(0);
+                    for i in 0..chunks {
+                        let offset = row_index + i * 8;
+                        let va = vld1q_s16(net.marking.as_ptr());
+                        let vb = vld1q_s16(net.incidence_matrix.as_ptr().add(offset));
+                        let vc = vaddq_s16(va, vb);
+                        let mask = vcgeq_s16(vc, zero);
+                        let mask_u8: uint16x8_t = core::mem::transmute(mask);
+                        let min = vminvq_u16(mask_u8);
+                        if min != 0xFF {
+                            return false;
+                        }
+                    }
+                }
+            } else {
+                chunks = 1;
+                remainder = 0;
+            }
+        }
+
+        // deal with remainder sequentially
+        for i in (net.place_index_head - remainder)..net.place_index_head {
+            if net.marking[i] + net.incidence_matrix[row_index + i] < 0 {
+                return false;
+            }
+        }
+
+        true
     }
 }
 
@@ -796,6 +896,55 @@ impl TokenGame for i32 {
             net.marking[i] += net.incidence_matrix[row_index + i];
         }
     }
+
+    fn is_transition_enabled<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &PetriNet<TPlaceId, TTransitionId, Self>,
+        t_index: usize,
+    ) -> bool {
+        let row_index = t_index * net.place_index_head;
+        let chunks: usize;
+        let remainder: usize;
+
+        cfg_if! {
+            if #[cfg(target_feature = "neon")]
+            {
+                use core::arch::aarch64::*;
+                chunks = net.place_index_head / 8;
+                remainder = net.place_index_head % 8;
+
+                unsafe {
+                    let zero = vdupq_n_s32(0);
+                    for i in 0..chunks {
+                        let offset = row_index + i * 8;
+                        let va = vld1q_s32(net.marking.as_ptr());
+                        let vb = vld1q_s32(net.incidence_matrix.as_ptr().add(offset));
+                        let vc = vaddq_s32(va, vb);
+                        let mask = vcgeq_s32(vc, zero);
+                        let mask_u8: uint32x4_t = core::mem::transmute(mask);
+                        let min = vminvq_u32(mask_u8);
+                        if min != 0xFF {
+                            return false;
+                        }
+                    }
+                }
+            } else {
+                chunks = 1;
+                remainder = 0;
+            }
+        }
+
+        // deal with remainder sequentially
+        for i in (net.place_index_head - remainder)..net.place_index_head {
+            if net.marking[i] + net.incidence_matrix[row_index + i] < 0 {
+                return false;
+            }
+        }
+
+        true
+    }
 }
 
 impl TokenGame for i64 {
@@ -836,6 +985,54 @@ impl TokenGame for i64 {
             net.marking[i] += net.incidence_matrix[row_index + i];
         }
     }
+
+    fn is_transition_enabled<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &PetriNet<TPlaceId, TTransitionId, Self>,
+        t_index: usize,
+    ) -> bool {
+        let row_index = t_index * net.place_index_head;
+        let chunks: usize;
+        let remainder: usize;
+
+        cfg_if! {
+            if #[cfg(target_feature = "neon")]
+            {
+                use core::arch::aarch64::*;
+                chunks = net.place_index_head / 8;
+                remainder = net.place_index_head % 8;
+
+                unsafe {
+                    let zero = vdupq_n_s64(0);
+                    for i in 0..chunks {
+                        let offset = row_index + i * 8;
+                        let va = vld1q_s64(net.marking.as_ptr());
+                        let vb = vld1q_s64(net.incidence_matrix.as_ptr().add(offset));
+                        let vc = vaddq_s64(va, vb);
+                        let mask = vcgeq_s64(vc, zero);
+                        let mask_u8: uint64x2_t = core::mem::transmute(mask);
+                        if vgetq_lane_u64(mask_u8, 0) != 0xFF ||vgetq_lane_u64(mask_u8, 1) != 0xFF {
+                            return false;
+                        }
+                    }
+                }
+            } else {
+                chunks = 1;
+                remainder = 0;
+            }
+        }
+
+        // deal with remainder sequentially
+        for i in (net.place_index_head - remainder)..net.place_index_head {
+            if net.marking[i] + net.incidence_matrix[row_index + i] < 0 {
+                return false;
+            }
+        }
+
+        true
+    }
 }
 
 impl TokenGame for i128 {
@@ -851,6 +1048,18 @@ impl TokenGame for i128 {
             net.marking[i] += net.incidence_matrix[row_index + i];
         }
     }
+
+    fn is_transition_enabled<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &PetriNet<TPlaceId, TTransitionId, Self>,
+        t_index: usize,
+    ) -> bool {
+        net.marking.iter().enumerate().all(|(p_index, &p_marking)| {
+            p_marking + net.incidence_matrix[t_index * net.place_index_head + p_index] >= 0
+        })
+    }
 }
 
 impl TokenGame for isize {
@@ -865,6 +1074,18 @@ impl TokenGame for isize {
         for i in 0..net.place_index_head {
             net.marking[i] += net.incidence_matrix[row_index + i];
         }
+    }
+
+    fn is_transition_enabled<
+        TPlaceId: Hash + Eq + Clone + fmt::Debug,
+        TTransitionId: Hash + Eq + Clone + fmt::Debug,
+    >(
+        net: &PetriNet<TPlaceId, TTransitionId, Self>,
+        t_index: usize,
+    ) -> bool {
+        net.marking.iter().enumerate().all(|(p_index, &p_marking)| {
+            p_marking + net.incidence_matrix[t_index * net.place_index_head + p_index] >= 0
+        })
     }
 }
 
